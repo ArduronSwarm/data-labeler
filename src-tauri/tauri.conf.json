@@ -1,0 +1,95 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Arduron Data Labeling",
+  "version": "0.1.0",
+  "identifier": "com.arduron.data-labeling",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev:vite",
+    "beforeBuildCommand": "npm run build:vite"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Arduron Data Labeling",
+        "width": 1400,
+        "height": 900,
+        "resizable": true,
+        "fullscreen": false,
+        "minWidth": 800,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost https: data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      },
+      "capabilities": [
+        {
+          "identifier": "main-capability",
+          "description": "Main application permissions",
+          "windows": ["main"],
+          "permissions": [
+            "dialog:allow-open",
+            "dialog:allow-save",
+            "dialog:default",
+            "fs:allow-read-file",
+            "fs:allow-write-file",
+            "fs:allow-read-dir",
+            "fs:allow-copy-file",
+            "fs:allow-create",
+            "fs:allow-exists",
+            "fs:default",
+            "fs:scope",
+            "shell:allow-execute",
+            "shell:default",
+            "core:default",
+            "core:window:allow-start-dragging",
+            "core:window:allow-maximize",
+            "core:window:allow-minimize",
+            "core:window:allow-close",
+            "core:path:default",
+            "core:event:default"
+          ],
+          "scopes": {
+            "fs:scope": {
+              "allow": ["$HOME/**", "/tmp/**", "$DESKTOP/**", "$PICTURE/**", "$DOWNLOAD/**", "**"],
+              "deny": []
+            }
+          }
+        }
+      ]
+    }
+  },
+  "plugins": {
+    "sql": {
+      "preload": ["sqlite:arduron.db"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": ["../python/**/*", "../*.pt"],
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": null
+    },
+    "windows": {
+      "allowDowngrades": true
+    },
+    "shortDescription": "AI-powered data labeling tool for object detection",
+    "longDescription": "Arduron Data Labeling is a desktop application for creating training datasets for computer vision models. Features include YOLO auto-detection, SAM-assisted segmentation, and export to common formats.",
+    "category": "DeveloperTool"
+  }
+}
