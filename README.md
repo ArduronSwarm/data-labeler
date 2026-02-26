@@ -1,3 +1,7 @@
+> **Warning**
+> All PRs must target the `development` branch, **not** `main`.
+> Only the `development` branch is allowed to merge into `main`.
+
 # Arduron Data Labeling
 
 A cross-platform data labeling application for computer vision, similar to Roboflow. Built with Tauri, React, and TypeScript.
