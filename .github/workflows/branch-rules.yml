@@ -1,0 +1,151 @@
+name: Branch Rules
+
+on:
+  pull_request:
+    branches: [main, development]
+    types: [opened, synchronize, reopened, assigned, review_requested, labeled]
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  enforce-rules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run all checks
+        id: checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          PENDING=0
+          ERROR=0
+
+          # Check label (required - fails if missing)
+          LABELS=$(gh pr view "$PR_NUMBER" --json labels -q '.labels | length')
+          if [ "$LABELS" -eq 0 ]; then
+            echo "label=❌" >> $GITHUB_OUTPUT
+            ERROR=1
+          else
+            echo "label=✅" >> $GITHUB_OUTPUT
+          fi
+
+          # Check assignee
+          ASSIGNEES=$(gh pr view "$PR_NUMBER" --json assignees -q '.assignees | length')
+          if [ "$ASSIGNEES" -eq 0 ]; then
+            echo "assignee=⏳" >> $GITHUB_OUTPUT
+            PENDING=1
+          else
+            echo "assignee=✅" >> $GITHUB_OUTPUT
+          fi
+
+          # Check reviewer
+          REVIEWERS=$(gh pr view "$PR_NUMBER" --json reviewRequests -q '.reviewRequests | length')
+          REVIEWS=$(gh pr view "$PR_NUMBER" --json reviews -q '.reviews | length')
+          TOTAL=$((REVIEWERS + REVIEWS))
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "reviewer=⏳" >> $GITHUB_OUTPUT
+            PENDING=1
+          else
+            echo "reviewer=✅" >> $GITHUB_OUTPUT
+          fi
+
+          # Check approval
+          APPROVALS=$(gh pr view "$PR_NUMBER" --json reviews -q '[.reviews[] | select(.state == "APPROVED")] | length')
+          if [ "$APPROVALS" -eq 0 ]; then
+            echo "approval=⏳" >> $GITHUB_OUTPUT
+            PENDING=1
+          else
+            echo "approval=✅" >> $GITHUB_OUTPUT
+          fi
+
+          # Check if branch needs update (informational only, doesn't block)
+          git fetch origin ${{ github.event.pull_request.base.ref }} --quiet
+          BEHIND=$(git rev-list --count HEAD..origin/${{ github.event.pull_request.base.ref }} 2>/dev/null || echo "0")
+          if [ "$BEHIND" -gt 0 ]; then
+            echo "update=⏳ ($BEHIND behind)" >> $GITHUB_OUTPUT
+          else
+            echo "update=✅" >> $GITHUB_OUTPUT
+          fi
+
+          echo "pending=$PENDING" >> $GITHUB_OUTPUT
+          echo "error=$ERROR" >> $GITHUB_OUTPUT
+
+      - name: Delete old comments
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr view "$PR_NUMBER" --json comments -q '.comments[] | select(.body | contains("❌ Branch Rules Check Failed")) | select(.body | contains("<!-- branch-rules-check -->") | not) | .id' | while read -r ID; do
+            if [ -n "$ID" ]; then
+              gh api graphql -f query='
+                mutation($id: ID!) {
+                  deleteIssueComment(input: {id: $id}) {
+                    clientMutationId
+                  }
+                }' -f id="$ID" || true
+            fi
+          done
+
+      - name: Update PR comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          LABEL: ${{ steps.checks.outputs.label }}
+          ASSIGNEE: ${{ steps.checks.outputs.assignee }}
+          REVIEWER: ${{ steps.checks.outputs.reviewer }}
+          APPROVAL: ${{ steps.checks.outputs.approval }}
+          UPDATE: ${{ steps.checks.outputs.update }}
+          PENDING: ${{ steps.checks.outputs.pending }}
+          ERROR: ${{ steps.checks.outputs.error }}
+        run: |
+          MARKER="<!-- branch-rules-check -->"
+
+          if [ "$ERROR" -eq 1 ]; then
+            STATUS="## ❌ Branch Rules Failed"
+          elif [ "$PENDING" -eq 1 ]; then
+            STATUS="## ⏳ Branch Rules Checklist"
+          else
+            STATUS="## ✅ All Branch Rules Passed"
+          fi
+
+          BODY="${MARKER}
+          ${STATUS}
+
+          | Check | Status |
+          |-------|--------|
+          | Label | ${LABEL} |
+          | Assignee | ${ASSIGNEE} |
+          | Reviewer requested | ${REVIEWER} |
+          | Approval received | ${APPROVAL} |
+          | Branch up to date | ${UPDATE} |
+
+          *This comment updates automatically as requirements are met.*"
+
+          COMMENT_ID=$(gh pr view "$PR_NUMBER" --json comments -q ".comments[] | select(.body | contains(\"$MARKER\")) | .id" | head -1)
+
+          if [ -n "$COMMENT_ID" ]; then
+            gh api graphql -f query='
+              mutation($id: ID!, $body: String!) {
+                updateIssueComment(input: {id: $id, body: $body}) {
+                  issueComment { id }
+                }
+              }' -f id="$COMMENT_ID" -f body="$BODY"
+          else
+            gh pr comment "$PR_NUMBER" --body "$BODY"
+          fi
+
+      - name: Fail only on errors
+        if: steps.checks.outputs.error == '1'
+        run: |
+          echo "❌ Branch rules check failed (missing required label)"
+          exit 1
