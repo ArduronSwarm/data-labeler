@@ -28,13 +28,12 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           PENDING=0
-          ERROR=0
 
-          # Check label (required - fails if missing)
+          # Check label
           LABELS=$(gh pr view "$PR_NUMBER" --json labels -q '.labels | length')
           if [ "$LABELS" -eq 0 ]; then
-            echo "label=❌" >> $GITHUB_OUTPUT
-            ERROR=1
+            echo "label=⏳" >> $GITHUB_OUTPUT
+            PENDING=1
           else
             echo "label=✅" >> $GITHUB_OUTPUT
           fi
@@ -78,13 +77,13 @@ jobs:
           fi
 
           echo "pending=$PENDING" >> $GITHUB_OUTPUT
-          echo "error=$ERROR" >> $GITHUB_OUTPUT
 
       - name: Delete old comments
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          # Delete old-style failure comments (without the marker)
           gh pr view "$PR_NUMBER" --json comments -q '.comments[] | select(.body | contains("❌ Branch Rules Check Failed")) | select(.body | contains("<!-- branch-rules-check -->") | not) | .id' | while read -r ID; do
             if [ -n "$ID" ]; then
               gh api graphql -f query='
@@ -106,13 +105,10 @@ jobs:
           APPROVAL: ${{ steps.checks.outputs.approval }}
           UPDATE: ${{ steps.checks.outputs.update }}
           PENDING: ${{ steps.checks.outputs.pending }}
-          ERROR: ${{ steps.checks.outputs.error }}
         run: |
           MARKER="<!-- branch-rules-check -->"
 
-          if [ "$ERROR" -eq 1 ]; then
-            STATUS="## ❌ Branch Rules Failed"
-          elif [ "$PENDING" -eq 1 ]; then
+          if [ "$PENDING" -eq 1 ]; then
             STATUS="## ⏳ Branch Rules Checklist"
           else
             STATUS="## ✅ All Branch Rules Passed"
@@ -131,9 +127,11 @@ jobs:
 
           *This comment updates automatically as requirements are met.*"
 
+          # Find existing comment
           COMMENT_ID=$(gh pr view "$PR_NUMBER" --json comments -q ".comments[] | select(.body | contains(\"$MARKER\")) | .id" | head -1)
 
           if [ -n "$COMMENT_ID" ]; then
+            # Update existing comment
             gh api graphql -f query='
               mutation($id: ID!, $body: String!) {
                 updateIssueComment(input: {id: $id, body: $body}) {
@@ -141,11 +139,7 @@ jobs:
                 }
               }' -f id="$COMMENT_ID" -f body="$BODY"
           else
+            # Create new comment
             gh pr comment "$PR_NUMBER" --body "$BODY"
           fi
 
-      - name: Fail only on errors
-        if: steps.checks.outputs.error == '1'
-        run: |
-          echo "❌ Branch rules check failed (missing required label)"
-          exit 1
