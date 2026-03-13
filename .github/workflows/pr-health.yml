@@ -1,0 +1,119 @@
+name: PR Health Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main, development]
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Check PR health
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+            const prNumber = pr.number;
+            const baseBranch = pr.base.ref;
+            const headBranch = pr.head.ref;
+            const labels = [];
+            const warnings = [];
+
+            // Check if branch is behind base
+            const comparison = await github.rest.repos.compareCommits({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              base: headBranch,
+              head: baseBranch
+            });
+
+            if (comparison.data.ahead_by > 0) {
+              labels.push('out-of-sync');
+              warnings.push(
+                `⚠️ This branch is **${comparison.data.ahead_by} commits behind** \`${baseBranch}\`. Please sync before merging.`
+              );
+            }
+
+            // Check if targeting main from non-development
+            if (baseBranch === 'main' && headBranch !== 'development') {
+              labels.push('targets-main');
+              warnings.push('🚫 This PR targets `main` directly. Only `development` should merge into `main`.');
+            }
+
+            // Check PR size
+            const files = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
+            if (files.data.length > 20) {
+              labels.push('large-pr');
+              warnings.push(`📦 This PR modifies **${files.data.length} files**. Consider breaking it into smaller PRs.`);
+            }
+
+            // Apply new labels
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                labels
+              });
+            }
+
+            // Remove labels that no longer apply
+            const currentLabels = pr.labels.map(l => l.name);
+            const healthLabels = ['out-of-sync', 'targets-main', 'large-pr'];
+            for (const label of healthLabels) {
+              if (currentLabels.includes(label) && !labels.includes(label)) {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  name: label
+                }).catch(() => {});
+              }
+            }
+
+            // Post or update warning comment
+            const marker = '<!-- pr-health-check -->';
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber
+            });
+
+            const existing = comments.data.find(c => c.body.includes(marker));
+
+            if (warnings.length > 0) {
+              const body = `${marker}\n## 🩺 PR Health Check\n\n${warnings.join('\n\n')}`;
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: existing.id,
+                  body
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  body
+                });
+              }
+            } else if (existing) {
+              await github.rest.issues.deleteComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id
+              });
+            }

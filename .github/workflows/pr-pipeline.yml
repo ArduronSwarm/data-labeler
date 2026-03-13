@@ -1,0 +1,116 @@
+name: PR Pipeline
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed, assigned, review_requested, labeled]
+    branches: [main, development]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  jira-transitions:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Jira transitions and PR template
+        uses: actions/github-script@v7
+        env:
+          JIRA_AUTH: ${{ secrets.JIRA_AUTH }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fetchJiraIssue = require('./.github/scripts/fetch-jira-issue.js');
+            const transitionJiraIssue = require('./.github/scripts/transition-jira-issue.js');
+            const getParentJiraKey = require('./.github/scripts/get-parent-jira-key.js');
+            const buildPrBody = require('./.github/scripts/build-pr-body.js');
+
+            const pr = context.payload.pull_request;
+            const branchName = pr.head.ref;
+            const currentBody = pr.body || '';
+            const prNumber = context.issue.number;
+            const author = pr.user.login;
+            const baseBranch = pr.base.ref;
+            const jiraAuth = process.env.JIRA_AUTH;
+            const match = branchName.match(/((?:SP|AR)-\d+)/);
+
+            async function transitionWithParent(targetStatus) {
+              if (!match || !jiraAuth) return;
+              const jiraKey = match[1];
+              await transitionJiraIssue({ jiraKey, jiraAuth, targetStatus });
+              const parentKey = await getParentJiraKey({ jiraKey, jiraAuth });
+              if (parentKey) await transitionJiraIssue({ jiraKey: parentKey, jiraAuth, targetStatus });
+            }
+
+            if (context.payload.action === 'closed' && pr.merged) {
+              await transitionWithParent('pr merged');
+              return;
+            }
+
+            const templateActions = ['opened', 'synchronize', 'reopened'];
+            if (!templateActions.includes(context.payload.action)) return;
+
+            if (baseBranch === 'main' && branchName !== 'development') {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: prNumber,
+                body: '> **Warning**\n> This PR targets `main` but only `development` should merge into `main`.\n> Please change the base branch to `development`.' });
+            }
+            if (baseBranch === 'development' && branchName.startsWith('release/')) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: prNumber,
+                body: '> **Warning**\n> `release/*` branches should merge into `main`.\n> Please change the base branch to `main`.' });
+            }
+
+            let jiraSection = '';
+            if (match) {
+              const result = await fetchJiraIssue({ jiraKey: match[1], jiraAuth, github, author });
+              jiraSection = result.section;
+            }
+
+            const { body, prTitle, needsUpdate } = buildPrBody({ branchName, currentBody, jiraSection, release: null });
+            if (needsUpdate) {
+              const payload = { ...context.repo, pull_number: prNumber, body };
+              if (prTitle) payload.title = prTitle;
+              await github.rest.pulls.update(payload);
+            }
+
+            await github.rest.issues.addAssignees({ ...context.repo, issue_number: prNumber, assignees: [author] });
+            await transitionWithParent('in progress');
+            await transitionWithParent('pr in review');
+
+  branch-rules:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run checks
+        id: checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: bash .github/scripts/branch-rules-check.sh
+
+      - name: Update PR comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          LABEL: ${{ steps.checks.outputs.label }}
+          ASSIGNEE: ${{ steps.checks.outputs.assignee }}
+          REVIEWER: ${{ steps.checks.outputs.reviewer }}
+          APPROVAL: ${{ steps.checks.outputs.approval }}
+          UPDATE: ${{ steps.checks.outputs.update }}
+          PENDING: ${{ steps.checks.outputs.pending }}
+        run: bash .github/scripts/branch-rules-comment.sh
