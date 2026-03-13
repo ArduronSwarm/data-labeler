@@ -1,0 +1,43 @@
+name: Branch Created
+
+on:
+  create:
+
+jobs:
+  transition-jira:
+    if: github.event.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Move Jira ticket to In Progress
+        uses: actions/github-script@v7
+        env:
+          JIRA_AUTH: ${{ secrets.JIRA_AUTH }}
+        with:
+          script: |
+            const transitionJiraIssue = require('./.github/scripts/transition-jira-issue.js');
+            const getParentJiraKey = require('./.github/scripts/get-parent-jira-key.js');
+
+            const branchName = context.payload.ref;
+            const match = branchName.match(/((?:SP|AR)-\d+)/);
+            if (!match) {
+              console.log('No Jira key found in branch name');
+              return;
+            }
+
+            const jiraKey = match[1];
+            const jiraAuth = process.env.JIRA_AUTH;
+
+            await transitionJiraIssue({ jiraKey, jiraAuth, targetStatus: 'in progress' });
+
+            const parentKey = await getParentJiraKey({ jiraKey, jiraAuth });
+            if (parentKey) {
+              await transitionJiraIssue({ jiraKey: parentKey, jiraAuth, targetStatus: 'in progress' });
+            }
