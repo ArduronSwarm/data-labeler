@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "engineVersion": "1.0.0",
+  "repository": "ArduronSwarm/data-labeler",
+  "branches": {
+    "development": "development",
+    "production": "main"
+  },
+  "jira": {
+    "baseUrl": "https://arduron.atlassian.net",
+    "projectKeys": [
+      "AR",
+      "SP"
+    ],
+    "startDateField": "customfield_10015",
+    "storyTypeField": "customfield_10327",
+    "productionFinalization": false
+  },
+  "pullRequests": {
+    "largeChangeThreshold": 20,
+    "allowHotfixToMain": true,
+    "requireLabel": false
+  },
+  "projects": {
+    "enabled": false
+  },
+  "release": {
+    "enabled": false,
+    "planning": false,
+    "candidates": false,
+    "prefix": "data-labeler"
+  }
+}

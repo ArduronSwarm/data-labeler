@@ -1,43 +1,45 @@
+# Automation contract v1.0.0; canonical source: othryn-stack/tools/ci-cd/automation.
 name: Branch Created
 
 on:
   create:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: branch-created-${{ github.event.ref }}
+  cancel-in-progress: false
+
 jobs:
   transition-jira:
     if: github.event.ref_type == 'branch'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
+    timeout-minutes: 5
     steps:
-      - name: Checkout scripts
-        uses: actions/checkout@v4
-        with:
-          sparse-checkout: .github/scripts
-
-      - name: Move Jira ticket to In Progress
-        uses: actions/github-script@v7
-        env:
-          JIRA_AUTH: ${{ secrets.JIRA_AUTH }}
+      - name: Resolve trusted default commit
+        id: trusted-code
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
-            const transitionJiraIssue = require('./.github/scripts/transition-jira-issue.js');
-            const getParentJiraKey = require('./.github/scripts/get-parent-jira-key.js');
-
-            const branchName = context.payload.ref;
-            const match = branchName.match(/((?:SP|AR)-\d+)/);
-            if (!match) {
-              console.log('No Jira key found in branch name');
-              return;
-            }
-
-            const jiraKey = match[1];
-            const jiraAuth = process.env.JIRA_AUTH;
-
-            await transitionJiraIssue({ jiraKey, jiraAuth, targetStatus: 'in progress' });
-
-            const parentKey = await getParentJiraKey({ jiraKey, jiraAuth });
-            if (parentKey) {
-              await transitionJiraIssue({ jiraKey: parentKey, jiraAuth, targetStatus: 'in progress' });
-            }
+            const result = await github.rest.repos.getCommit({ ...context.repo, ref: context.payload.repository.default_branch });
+            if (!/^[a-f0-9]{40}$/.test(result.data.sha)) throw new Error('Invalid default commit');
+            core.setOutput('sha', result.data.sha);
+      - name: Checkout trusted automation only
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ steps.trusted-code.outputs.sha }}
+          persist-credentials: false
+          sparse-checkout: .github
+      - name: Use Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: Run branch-created
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTOMATION_CODE_SHA: ${{ steps.trusted-code.outputs.sha }}
+          JIRA_AUTH: ${{ secrets.JIRA_AUTH }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: node .github/scripts/automation/runner.mjs branch-created

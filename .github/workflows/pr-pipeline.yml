@@ -1,116 +1,45 @@
+# Automation contract v1.0.0; canonical source: othryn-stack/tools/ci-cd/automation.
 name: PR Pipeline
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, closed, assigned, review_requested, labeled]
+  pull_request_target:
     branches: [main, development]
-  pull_request_review:
-    types: [submitted]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, closed, edited]
+
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-pipeline-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
 
 jobs:
   jira-transitions:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: write
-
+      issues: write
     steps:
-      - name: Checkout scripts
-        uses: actions/checkout@v4
+      - name: Checkout trusted automation only
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          sparse-checkout: .github/scripts
-
-      - name: Jira transitions and PR template
-        uses: actions/github-script@v7
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          sparse-checkout: .github
+      - name: Use Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: Run pr-pipeline
         env:
+          GH_TOKEN: ${{ github.token }}
+          AUTOMATION_CODE_SHA: ${{ github.event.pull_request.base.sha }}
           JIRA_AUTH: ${{ secrets.JIRA_AUTH }}
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const fetchJiraIssue = require('./.github/scripts/fetch-jira-issue.js');
-            const transitionJiraIssue = require('./.github/scripts/transition-jira-issue.js');
-            const getParentJiraKey = require('./.github/scripts/get-parent-jira-key.js');
-            const buildPrBody = require('./.github/scripts/build-pr-body.js');
-
-            const pr = context.payload.pull_request;
-            const branchName = pr.head.ref;
-            const currentBody = pr.body || '';
-            const prNumber = context.issue.number;
-            const author = pr.user.login;
-            const baseBranch = pr.base.ref;
-            const jiraAuth = process.env.JIRA_AUTH;
-            const match = branchName.match(/((?:SP|AR)-\d+)/);
-
-            async function transitionWithParent(targetStatus) {
-              if (!match || !jiraAuth) return;
-              const jiraKey = match[1];
-              await transitionJiraIssue({ jiraKey, jiraAuth, targetStatus });
-              const parentKey = await getParentJiraKey({ jiraKey, jiraAuth });
-              if (parentKey) await transitionJiraIssue({ jiraKey: parentKey, jiraAuth, targetStatus });
-            }
-
-            if (context.payload.action === 'closed' && pr.merged) {
-              await transitionWithParent('pr merged');
-              return;
-            }
-
-            const templateActions = ['opened', 'synchronize', 'reopened'];
-            if (!templateActions.includes(context.payload.action)) return;
-
-            if (baseBranch === 'main' && branchName !== 'development') {
-              await github.rest.issues.createComment({ ...context.repo, issue_number: prNumber,
-                body: '> **Warning**\n> This PR targets `main` but only `development` should merge into `main`.\n> Please change the base branch to `development`.' });
-            }
-            if (baseBranch === 'development' && branchName.startsWith('release/')) {
-              await github.rest.issues.createComment({ ...context.repo, issue_number: prNumber,
-                body: '> **Warning**\n> `release/*` branches should merge into `main`.\n> Please change the base branch to `main`.' });
-            }
-
-            let jiraSection = '';
-            if (match) {
-              const result = await fetchJiraIssue({ jiraKey: match[1], jiraAuth, github, author });
-              jiraSection = result.section;
-            }
-
-            const { body, prTitle, needsUpdate } = buildPrBody({ branchName, currentBody, jiraSection, release: null });
-            if (needsUpdate) {
-              const payload = { ...context.repo, pull_number: prNumber, body };
-              if (prTitle) payload.title = prTitle;
-              await github.rest.pulls.update(payload);
-            }
-
-            await github.rest.issues.addAssignees({ ...context.repo, issue_number: prNumber, assignees: [author] });
-            await transitionWithParent('in progress');
-            await transitionWithParent('pr in review');
-
-  branch-rules:
-    if: github.event.action != 'closed'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Run checks
-        id: checks
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-        run: bash .github/scripts/branch-rules-check.sh
-
-      - name: Update PR comment
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          LABEL: ${{ steps.checks.outputs.label }}
-          ASSIGNEE: ${{ steps.checks.outputs.assignee }}
-          REVIEWER: ${{ steps.checks.outputs.reviewer }}
-          APPROVAL: ${{ steps.checks.outputs.approval }}
-          UPDATE: ${{ steps.checks.outputs.update }}
-          PENDING: ${{ steps.checks.outputs.pending }}
-        run: bash .github/scripts/branch-rules-comment.sh
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_RELEASE_NAME: ${{ vars.JIRA_RELEASE_NAME }}
+        run: node .github/scripts/automation/runner.mjs pr-pipeline

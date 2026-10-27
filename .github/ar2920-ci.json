@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "standardVersion": "1.0.0",
+  "coverage": "automation-contracts",
+  "description": "Runs workflow/automation contracts and any explicitly listed configuration suites; application behavior is not tested by this profile.",
+  "suites": []
+}
